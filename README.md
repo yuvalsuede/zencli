@@ -10,6 +10,12 @@ sidebar. Multiple terminal tabs on the left, multiple browser tabs on the
 right. Audio and video in inactive sidebar tabs keep playing — each browser
 tab is its own native `WebContentsView` attached to the window.
 
+## Demo
+
+<video src="https://github.com/yuvalsuede/zencli/raw/main/docs/demo.mp4" controls width="800"></video>
+
+> If the video doesn't play inline, [watch it here](./docs/demo.mp4).
+
 ## Install
 
 Requires Node 20+ and macOS (tested path).

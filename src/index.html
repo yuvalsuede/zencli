@@ -7,10 +7,19 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!--
+    Full-width drag bar. Traffic lights sit on the left (positioned by
+    Electron via trafficLightPosition). Everything here is draggable except
+    children explicitly marked -webkit-app-region: no-drag. Double-click
+    triggers the system "zoom" / maximize action.
+  -->
+  <div id="titlebar">
+    <div id="titlebar-brand">zencli</div>
+  </div>
+
   <div id="app">
     <div id="main">
       <div id="tabbar">
-        <div id="traffic-spacer"></div>
         <div id="tabs"></div>
         <button id="new-tab" title="New tab (⌘T)">+</button>
       </div>

@@ -1,13 +1,46 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body, #app { height: 100%; width: 100%; overflow: hidden; }
+html, body { height: 100%; width: 100%; overflow: hidden; }
 body {
   background: #1a1a1a;
   color: #eaeaea;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
 }
 
-#app { display: flex; flex-direction: row; height: 100%; }
+/* --- Titlebar (window drag handle) ---
+   Full-width, 28px tall. The whole thing is a drag region — grab anywhere
+   across the top to move the window; double-click to zoom.
+   MUST stay in sync with TITLEBAR_HEIGHT in electron/main.js (the sidebar
+   WebContentsView is offset by this value). */
+#titlebar {
+  height: 28px;
+  flex-shrink: 0;
+  background: #0a0a0a;
+  border-bottom: 1px solid #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#titlebar-brand {
+  font-size: 11px;
+  color: #666;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+#app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+}
 
 /* --- Left side: tab bar + terminals --- */
 #main { flex: 1; min-width: 200px; display: flex; flex-direction: column; }
@@ -18,9 +51,8 @@ body {
   height: 36px;
   background: #101010;
   border-bottom: 1px solid #000;
-  -webkit-app-region: drag;
+  padding-left: 6px;
 }
-#traffic-spacer { width: 78px; height: 100%; }
 #tabs {
   display: flex;
   gap: 2px;
@@ -28,7 +60,6 @@ body {
   overflow-x: auto;
   height: 100%;
   align-items: flex-end;
-  -webkit-app-region: no-drag;
 }
 #tabs::-webkit-scrollbar { display: none; }
 
@@ -102,7 +133,6 @@ body {
   cursor: pointer;
   padding: 0 14px;
   height: 100%;
-  -webkit-app-region: no-drag;
 }
 #new-tab:hover { color: #fff; }
 

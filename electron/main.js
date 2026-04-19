@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const pty = require('node-pty');
@@ -14,9 +14,18 @@ let mainWindow;
 let sidebarWidth = persisted.sidebar.width;
 let sidebarVisible = persisted.sidebar.visible;
 
+// Height of the custom titlebar (the drag handle across the top of the
+// window). MUST stay in sync with #titlebar in src/styles.css.
+const TITLEBAR_HEIGHT = 28;
+
 // Height of the HTML chrome above the sidebar web view (sidebar tab strip
 // + nav bar). MUST stay in sync with #sidebar-chrome in src/styles.css.
 const SIDEBAR_CHROME_HEIGHT = 66;
+
+// Total vertical offset before the sidebar's WebContentsView starts:
+// titlebar + sidebar chrome. Used when positioning the native view which
+// lives in content-area coordinates.
+const SIDEBAR_VIEW_Y = TITLEBAR_HEIGHT + SIDEBAR_CHROME_HEIGHT;
 
 const sidebarTabs = new Map(); // id -> WebContentsView
 let activeSidebarTabId = null;
@@ -63,9 +72,9 @@ function layoutSidebar() {
     } else {
       view.setBounds({
         x: w - sidebarWidth,
-        y: SIDEBAR_CHROME_HEIGHT,
+        y: SIDEBAR_VIEW_Y,
         width: sidebarWidth,
-        height: Math.max(0, h - SIDEBAR_CHROME_HEIGHT),
+        height: Math.max(0, h - SIDEBAR_VIEW_Y),
       });
     }
   }
@@ -197,7 +206,12 @@ function createWindow() {
     ...bounds,
     minWidth: 800,
     minHeight: 500,
+    resizable: true,
+    movable: true,
     titleBarStyle: 'hiddenInset',
+    // Center the traffic lights vertically in our 28px titlebar.
+    // Traffic light cluster is ~14px tall, so y = (28 - 14) / 2 = 7.
+    trafficLightPosition: { x: 12, y: 7 },
     backgroundColor: '#1a1a1a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -210,6 +224,32 @@ function createWindow() {
   }
 
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
+
+  // --- Block renderer reload ---
+  //
+  // Reloading the renderer is CATASTROPHIC for zencli. The new renderer
+  // re-runs bootTerminalTabs() and calls pty:spawn with fresh ids
+  // starting at 1. Main's `ptys` Map overwrites the old entries; the old
+  // pty JS objects become unreferenced; once GC closes their master fds,
+  // SIGHUP flows down to the shell; zsh dies; Claude dies. Every running
+  // CLI is lost without warning.
+  //
+  // zencli's UI is the product, not a web page — there's no legitimate
+  // reason to reload it in normal use. For iterating on the UI during
+  // dev, use `npm run stop && npm run start:fg`: that's the intentional
+  // restart path, which flushes state and kills ptys gracefully first.
+  //
+  // Swallow Cmd/Ctrl+R, Cmd/Ctrl+Shift+R, and F5 on the renderer's
+  // webContents. The View → Reload menu items are removed separately in
+  // buildAppMenu().
+  mainWindow.webContents.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown') return;
+    const meta = input.meta || input.control;
+    const isReloadKey =
+      (meta && (input.key === 'r' || input.key === 'R')) ||
+      input.key === 'F5';
+    if (isReloadKey) e.preventDefault();
+  });
 
   // Restore sidebar tabs from persisted state. If there was nothing
   // saved (first launch, or state reset), fall back to one YouTube tab
@@ -366,9 +406,45 @@ ipcMain.on('pty:kill', (_, { id }) => {
   clearTabActivity(id);
 });
 
+// --- Application menu ---
+//
+// Custom menu that omits Reload / Force Reload. See the before-input-event
+// block in createWindow for the reason — reloading the renderer silently
+// kills every running CLI via GC'd pty master fds.
+//
+// Everything else is standard macOS menu roles: the app / edit / window
+// menus come pre-built by Electron; we only hand-roll View so we can
+// drop the two reload items while keeping DevTools + zoom + fullscreen.
+function buildAppMenu() {
+  const template = [
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+    {
+      label: 'View',
+      submenu: [
+        // role: 'reload' and role: 'forceReload' are INTENTIONALLY omitted.
+        // If you're adding them back, read the comment in createWindow
+        // first — it explains why this is a footgun.
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // --- Lifecycle ---
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  buildAppMenu();
+  createWindow();
+});
 
 // Final state flush right before we tear everything down. `before-quit`
 // fires for every exit path (cmd-Q, window-all-closed, SIGTERM from

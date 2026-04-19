@@ -34,15 +34,26 @@ const tabs = new Map(); // id -> { tabEl, labelEl, termEl, term, fit, cleanupDat
 // running→unread on the 500ms idle heuristic anymore — that caused
 // blinking because Claude pauses >500ms between tool calls / thinking
 // blocks, and every pause would flash the tab green. `.unread` is set
-// exclusively by explicit "done" signals below (bell / OSC 1337 Stop
-// hook). A new running event clears .unread.
+// by the "done" signals wired in newTab:
+//   1. OSC 1337 from our installed Stop hook (precise, latches instantly)
+//   2. Bell (\a) when Claude Code notifications are enabled
+//   3. Fallback: 3s of zero pty output while in claudeMode — covers the
+//      case where the current Claude session predates the hook install
+//      (Claude only reads settings.json at session start) or notifications
+//      are off.
+//
+// Grace window: after .unread is set, a transient 'running' event inside
+// 1500ms is ignored. Without this, Claude's prompt-box redraw right after
+// the Stop hook triggers `running` for a few hundred ms and wipes the
+// green we just painted. A later 'running' event (i.e. user/Claude
+// actually starting a new turn) clears .unread as expected.
 window.api.pty.onState(({ id, state }) => {
   const t = tabs.get(id);
   if (!t) return;
   if (!t.claudeMode) return;
   const running = state === 'running';
   t.tabEl.classList.toggle('running', running);
-  if (running) {
+  if (running && Date.now() - (t.unreadSetAt || 0) > 1500) {
     // Resumed — clear any stale "done" state from the previous turn.
     t.tabEl.classList.remove('unread');
   }
@@ -125,32 +136,81 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
     cwd: opts.cwd || undefined,
   });
 
-  const cleanupData = window.api.pty.onData(id, (data) => term.write(data));
+  // --- Fallback "done" detector ---
+  //
+  // The hard signals (OSC 1337 from the Stop hook, bell with notifications)
+  // fire instantly — but they don't always arrive: the running Claude
+  // session may predate the hook install (Claude reads settings.json at
+  // session start, so a hook added later won't apply until restart), the
+  // user may have notifications off, or the hook's stdout may be piped
+  // somewhere that never reaches the pty. This timer is the catch-all:
+  // after claude-mode data goes quiet for IDLE_DONE_MS, flip the tab
+  // green.
+  //
+  // IDLE_DONE_MS is tuned longer than Claude's mid-response pauses:
+  // thinking blocks and tool calls still emit spinner frames at ~100ms,
+  // so 3s of zero output means the stream really has stopped. Shorter
+  // values (e.g. 500ms like the original main-side heuristic) caused
+  // blinking during thinking pauses.
+  const IDLE_DONE_MS = 3000;
+  const armIdleDone = () => {
+    const t = tabs.get(id);
+    if (!t) return;
+    if (t.idleTimer) clearTimeout(t.idleTimer);
+    t.idleTimer = setTimeout(() => {
+      t.idleTimer = null;
+      if (!t.claudeMode) return;
+      t.unreadSetAt = Date.now();
+      tabEl.classList.remove('running');
+      tabEl.classList.add('unread');
+    }, IDLE_DONE_MS);
+  };
+
+  const cleanupData = window.api.pty.onData(id, (data) => {
+    term.write(data);
+    // Only run the fallback timer inside a Claude session — tab paint
+    // is suppressed outside claudeMode anyway, so no need to fire.
+    if (tabs.get(id)?.claudeMode) armIdleDone();
+  });
   const cleanupExit = window.api.pty.onExit(id, () => closeTab(id));
   term.onData((data) => window.api.pty.write(id, data));
   term.onResize(({ cols, rows }) => window.api.pty.resize(id, cols, rows));
 
   // --- Claude Code detector ---
   //
-  // We only want the green/orange paint inside a Claude Code session, not
-  // while running `ls` in zsh. Claude Code does NOT use the alternate screen
-  // buffer (it renders inline so scrollback works), so we can't gate on that.
-  // Instead we use the terminal title: Claude Code sets it to "Claude Code"
-  // / "* Claude Code" via OSC 0/2.
+  // We only want the spinner / green paint inside a Claude Code session,
+  // not while running `ls` in zsh. Claude Code does NOT use the alternate
+  // screen buffer (it renders inline so scrollback works), so we can't
+  // gate on that. We detect Claude Code by three signals, any of which
+  // latches claudeMode on for the tab's lifetime:
   //
-  // Known caveat: after you exit Claude, zsh typically doesn't reset the
-  // title, so claudeMode can stay true until the tab closes or a new TUI
-  // overwrites the title. The tab color therefore may linger on an exited
-  // session — honest about this rather than silently misleading.
+  //   1. Title ever contains "claude" (Claude Code usually sets it to
+  //      "Claude Code" on launch, then rewrites it to the current task
+  //      like "Create a countdown timer" mid-session).
+  //   2. Title starts with a Claude spinner prefix — the asterisk/bullet
+  //      chars Claude Code uses while thinking. Covers the case where we
+  //      never saw the literal word "claude" (e.g. restored session that
+  //      came up straight into a task).
+  //   3. OSC 1337 arrives. That escape can only come from our auto-
+  //      installed Stop hook (see scripts/install-claude-hook.js), so its
+  //      presence is a hard positive.
+  //
+  // Sticky: once claudeMode is true we never flip it off. Claude rewrites
+  // the title to the task description mid-session, and the old heuristic
+  // flipped claudeMode false on that rewrite — killing the spinner + green
+  // until tab close. Known caveat documented in README: the color can
+  // linger after exiting claude, since zsh doesn't reset the title.
+  //
+  // Spinner prefixes Claude Code has been observed to use (frame rotates):
+  //   * ✶ ✳ ✺ · ⋆ ❉ ✦ ⦿ ⬥
+  const CLAUDE_SPINNER_PREFIX = /^[\*\u2022\u22c6\u2736\u2733\u273a\u2749\u2726\u29bf\u2b25]\s/;
+
   let lastTitle = '';
   const recomputeClaudeMode = () => {
-    const next = /claude/i.test(lastTitle);
     const t = tabs.get(id);
-    if (!t) return;
-    if (t.claudeMode === next) return;
-    t.claudeMode = next;
-    if (!next) {
-      tabEl.classList.remove('running', 'unread');
+    if (!t || t.claudeMode) return; // sticky: never unset
+    if (/claude/i.test(lastTitle) || CLAUDE_SPINNER_PREFIX.test(lastTitle)) {
+      t.claudeMode = true;
     }
   };
 
@@ -192,13 +252,20 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
   term.onBell(() => {
     const t = tabs.get(id);
     if (!t?.claudeMode) return;
+    if (t.idleTimer) { clearTimeout(t.idleTimer); t.idleTimer = null; }
+    t.unreadSetAt = Date.now();
     tabEl.classList.remove('running');
     tabEl.classList.add('unread');
   });
   try {
     term.parser?.registerOscHandler?.(1337, () => {
       const t = tabs.get(id);
-      if (!t?.claudeMode) return true;
+      if (!t) return true;
+      // OSC 1337 can only come from our installed Claude Stop hook, so
+      // treat its arrival as definitive Claude-mode detection and latch.
+      t.claudeMode = true;
+      if (t.idleTimer) { clearTimeout(t.idleTimer); t.idleTimer = null; }
+      t.unreadSetAt = Date.now();
       tabEl.classList.remove('running');
       tabEl.classList.add('unread');
       return true;
@@ -226,6 +293,11 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
     cleanupExit,
     claudeMode: false,
     cwd: opts.cwd || null,
+    // Fallback idle timer handle; see armIdleDone above.
+    idleTimer: null,
+    // Timestamp of the most recent .unread paint. onState reads this to
+    // suppress the prompt-redraw-clears-green race window.
+    unreadSetAt: 0,
   });
   activate(id);
   syncTerminalsToState();
@@ -256,6 +328,7 @@ function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
   try { t.ro?.disconnect(); } catch {}
+  if (t.idleTimer) { clearTimeout(t.idleTimer); t.idleTimer = null; }
   try { t.cleanupData?.(); } catch {}
   try { t.cleanupExit?.(); } catch {}
   window.api.pty.kill(id);
