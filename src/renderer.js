@@ -61,11 +61,15 @@ window.api.pty.onState(({ id, state }) => {
 
 // Push current terminal-tab state to main so it can be restored on the
 // next launch. Debounced inside main. Called after every create / close /
-// activate / title change.
+// activate / cwd change / rename.
+//
+// `labelSource` tells next launch whether to resume live folder tracking
+// ('folder') or preserve the user's explicit rename ('user').
 function syncTerminalsToState() {
   const list = [...tabs.entries()].map(([, t]) => ({
-    label: t.labelEl?.textContent || 'zsh',
+    label: t.labelEl?.textContent || '~',
     cwd: t.cwd || undefined,
+    labelSource: t.labelSource === 'folder' ? 'folder' : 'user',
   }));
   const activeIndex = [...tabs.keys()].indexOf(activeId);
   try {
@@ -76,8 +80,33 @@ function syncTerminalsToState() {
   } catch {}
 }
 
-async function newTab(label = 'zsh', cmd = null, opts = {}) {
+// basename() of a cwd path, for tab labels. '~' for the user's homedir
+// feel — we can't know homedir in renderer, but new tabs spawn there by
+// default, and zsh's chpwd_osc7 (macOS default) will overwrite this with
+// the real basename the instant it fires.
+function folderLabel(cwd) {
+  if (!cwd) return '~';
+  const trimmed = cwd.replace(/\/+$/, '');
+  if (!trimmed) return '/';
+  const base = trimmed.split('/').pop();
+  return base || '/';
+}
+
+async function newTab(label = null, cmd = null, opts = {}) {
   const id = nextId++;
+
+  // Three ways a tab label is sourced:
+  //   - 'folder': auto-derived from cwd, live-updates on OSC 7 (default)
+  //   - 'user':   explicit right-click rename, sticks until re-rename
+  // Legacy callers passing 'zsh' are coerced to folder mode.
+  let labelSource = opts.labelSource === 'user' ? 'user' : 'folder';
+  let initialLabel;
+  if (label && label !== 'zsh' && labelSource === 'user') {
+    initialLabel = label;
+  } else {
+    initialLabel = folderLabel(opts.cwd);
+    labelSource = 'folder';
+  }
 
   const tabEl = document.createElement('div');
   tabEl.className = 'tab';
@@ -85,12 +114,19 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
   dotEl.className = 'dot';
   const labelEl = document.createElement('span');
   labelEl.className = 'label';
-  labelEl.textContent = label;
+  labelEl.textContent = shorten(initialLabel);
   const closeEl = document.createElement('span');
   closeEl.className = 'close';
   closeEl.textContent = '×';
   tabEl.append(dotEl, labelEl, closeEl);
   tabEl.addEventListener('click', () => activate(id));
+  // Right-click anywhere on the tab to rename. Inline edit with
+  // Enter-to-commit / Esc-to-cancel / blur-to-commit. Empty string
+  // reverts to auto folder mode.
+  tabEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    startRename(id);
+  });
   closeEl.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
   tabsEl.appendChild(tabEl);
 
@@ -114,6 +150,24 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(termEl);
+
+  // Keep our window-level tab-nav shortcuts out of the pty. Returning
+  // false from attachCustomKeyEventHandler tells xterm to not process
+  // (and not forward to the shell) this keydown — but the DOM event
+  // still bubbles to our window listener, which is where the actual
+  // switch happens.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    // Ctrl+Tab / Ctrl+Shift+Tab
+    if (ev.ctrlKey && !ev.metaKey && !ev.altKey && ev.key === 'Tab') return false;
+    // Cmd+Alt+Left/Right
+    if (ev.metaKey && ev.altKey && !ev.ctrlKey && !ev.shiftKey &&
+        (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) return false;
+    // Cmd+Shift+[ / Cmd+Shift+] (and their shifted glyphs {, })
+    if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && !ev.altKey &&
+        (ev.key === '[' || ev.key === ']' || ev.key === '{' || ev.key === '}')) return false;
+    return true;
+  });
 
   // Measure before spawning the pty so the child process starts with the
   // right $COLUMNS/$LINES. We defer two RAFs so flex layout has actually
@@ -214,18 +268,22 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
     }
   };
 
+  // Title is NOT used as the tab label anymore — folder basename is the
+  // default (see folderLabel + OSC 7 handler) and right-click rename is
+  // the only thing that overrides it. We still watch the title to detect
+  // Claude Code so the activity paint (spinner / green) can fire.
   term.onTitleChange((title) => {
-    const trimmed = (title || '').trim();
-    if (trimmed) labelEl.textContent = shorten(trimmed);
-    lastTitle = trimmed;
+    lastTitle = (title || '').trim();
     recomputeClaudeMode();
-    syncTerminalsToState();
   });
 
   // OSC 7 — shell emits `\033]7;file://host/<path>\a` on chdir. Not
   // every shell does this by default, but macOS's zsh integration does
-  // and it's cheap to handle. Used to keep per-tab cwd up to date so
-  // recovery restores each tab into its last working directory.
+  // and it's cheap to handle. Two uses:
+  //   1. Keep per-tab cwd up to date so recovery restores each tab into
+  //      its last working directory.
+  //   2. Live-update the tab label to the new folder basename (only
+  //      when labelSource is still 'folder' — i.e. user hasn't renamed).
   try {
     term.parser?.registerOscHandler?.(7, (payload) => {
       try {
@@ -233,6 +291,9 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
         const t = tabs.get(id);
         if (t && u.pathname) {
           t.cwd = decodeURIComponent(u.pathname);
+          if (t.labelSource === 'folder') {
+            t.labelEl.textContent = shorten(folderLabel(t.cwd));
+          }
           syncTerminalsToState();
         }
       } catch {}
@@ -293,6 +354,8 @@ async function newTab(label = 'zsh', cmd = null, opts = {}) {
     cleanupExit,
     claudeMode: false,
     cwd: opts.cwd || null,
+    // 'folder' = auto-track basename(cwd); 'user' = sticky rename.
+    labelSource,
     // Fallback idle timer handle; see armIdleDone above.
     idleTimer: null,
     // Timestamp of the most recent .unread paint. onState reads this to
@@ -324,6 +387,89 @@ function activate(id) {
   syncTerminalsToState();
 }
 
+// Inline rename — turns the label span contentEditable. Enter or blur
+// commits; Esc cancels. Empty text reverts to folder mode, non-empty
+// flips labelSource to 'user' (sticky until the next rename).
+function startRename(id) {
+  const t = tabs.get(id);
+  if (!t) return;
+  const labelEl = t.labelEl;
+  if (labelEl.dataset.editing === '1') return;
+  labelEl.dataset.editing = '1';
+
+  // Snapshot the original text in case the user hits Esc.
+  const originalText = labelEl.textContent;
+
+  labelEl.contentEditable = 'true';
+  labelEl.spellcheck = false;
+  labelEl.classList.add('editing');
+  labelEl.focus();
+  // Select all text inside the span so typing replaces, arrow keys tweak.
+  const range = document.createRange();
+  range.selectNodeContents(labelEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  let cancelled = false;
+  const cleanup = () => {
+    labelEl.removeEventListener('blur', onBlur);
+    labelEl.removeEventListener('keydown', onKey);
+    labelEl.contentEditable = 'false';
+    labelEl.classList.remove('editing');
+    delete labelEl.dataset.editing;
+  };
+  const commit = () => {
+    const newName = labelEl.textContent.trim();
+    if (!newName) {
+      // Empty → revert to folder mode.
+      t.labelSource = 'folder';
+      labelEl.textContent = shorten(folderLabel(t.cwd));
+    } else {
+      t.labelSource = 'user';
+      labelEl.textContent = shorten(newName);
+    }
+    cleanup();
+    syncTerminalsToState();
+  };
+  const cancel = () => {
+    cancelled = true;
+    labelEl.textContent = originalText;
+    cleanup();
+  };
+  const onBlur = () => {
+    if (!cancelled) commit();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // blur triggers commit
+      labelEl.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancel();
+    }
+  };
+  labelEl.addEventListener('blur', onBlur);
+  labelEl.addEventListener('keydown', onKey);
+}
+
+// Tab navigation helpers — wrap around at both ends.
+function prevTab() {
+  const ids = [...tabs.keys()];
+  if (ids.length < 2) return;
+  const idx = ids.indexOf(activeId);
+  const next = ids[(idx - 1 + ids.length) % ids.length];
+  activate(next);
+}
+function nextTab() {
+  const ids = [...tabs.keys()];
+  if (ids.length < 2) return;
+  const idx = ids.indexOf(activeId);
+  const next = ids[(idx + 1) % ids.length];
+  activate(next);
+}
+
 function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
@@ -344,7 +490,7 @@ function closeTab(id) {
   syncTerminalsToState();
 }
 
-newTabBtn.addEventListener('click', () => newTab('zsh'));
+newTabBtn.addEventListener('click', () => newTab());
 
 // --- Divider drag ---
 
@@ -475,13 +621,41 @@ urlInput.addEventListener('keydown', (e) => {
 });
 
 // --- Keyboard shortcuts ---
+//
+// Tab navigation set (matching Terminal.app + browser conventions):
+//   Cmd+Shift+]         next tab
+//   Cmd+Shift+[         previous tab
+//   Ctrl+Tab            next tab
+//   Ctrl+Shift+Tab      previous tab
+//   Cmd+Alt+Right       next tab
+//   Cmd+Alt+Left        previous tab
+// Ctrl+Tab wouldn't normally bubble out of xterm — we also intercept it
+// via attachCustomKeyEventHandler on each terminal (see newTab).
 
 window.addEventListener('keydown', (e) => {
+  // Tab navigation (can use Ctrl or Cmd+Shift combos — check first, no meta guard).
+  // Ctrl+Tab / Ctrl+Shift+Tab
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Tab') {
+    e.preventDefault();
+    if (e.shiftKey) prevTab(); else nextTab();
+    return;
+  }
+  // Cmd+Alt+Left / Cmd+Alt+Right
+  if (e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey) {
+    if (e.key === 'ArrowRight') { e.preventDefault(); nextTab(); return; }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); prevTab(); return; }
+  }
+  // Cmd+Shift+] / Cmd+Shift+[  (macOS emits } / { when shift+bracket)
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+    if (e.key === ']' || e.key === '}') { e.preventDefault(); nextTab(); return; }
+    if (e.key === '[' || e.key === '{') { e.preventDefault(); prevTab(); return; }
+  }
+
   const meta = e.metaKey || e.ctrlKey;
   if (!meta) return;
   if (e.key === 't' && !e.shiftKey) {
     e.preventDefault();
-    newTab('zsh');
+    newTab();
   } else if (e.key === 'T' && e.shiftKey) {
     e.preventDefault();
     window.api.sidebar.newTab();
@@ -517,18 +691,24 @@ async function bootTerminalTabs() {
   } catch {}
 
   if (!Array.isArray(initial.tabs) || initial.tabs.length === 0) {
-    await newTab('zsh');
+    await newTab();
     return;
   }
 
   // Recreate in order. Track the ids so we can activate the right one
-  // after all tabs are up.
+  // after all tabs are up. labelSource defaults to 'user' on restore:
+  // we preserve whatever label was last shown (could be a rename, could
+  // be a pre-refactor saved title) instead of immediately flipping it
+  // to the homedir basename. Folder-mode tabs persist their source
+  // explicitly, so those keep live-updating after restart.
   const created = [];
   for (const saved of initial.tabs) {
     const label = typeof saved?.label === 'string' && saved.label.trim()
       ? saved.label
-      : 'zsh';
-    const opts = saved?.cwd ? { cwd: saved.cwd } : {};
+      : null;
+    const opts = {};
+    if (saved?.cwd) opts.cwd = saved.cwd;
+    opts.labelSource = saved?.labelSource === 'folder' ? 'folder' : 'user';
     await newTab(label, null, opts);
     created.push(activeId);
   }

@@ -41,7 +41,7 @@ const DEFAULT_STATE = Object.freeze({
     activeIndex: 0,
   },
   terminals: {
-    tabs: [], // [{ label, cwd }]
+    tabs: [], // [{ label, cwd, labelSource }] — labelSource: 'folder' | 'user'
     activeIndex: 0,
   },
 });

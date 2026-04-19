@@ -5,16 +5,14 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#install)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
+<video src="https://github.com/yuvalsuede/zencli/raw/main/docs/demo.mp4" controls width="800"></video>
+
+> If the video doesn't play inline, [watch it here](./docs/demo.mp4).
+
 Electron-based terminal for Claude Code with a persistent mini-browser
 sidebar. Multiple terminal tabs on the left, multiple browser tabs on the
 right. Audio and video in inactive sidebar tabs keep playing — each browser
 tab is its own native `WebContentsView` attached to the window.
-
-## Demo
-
-<video src="https://github.com/yuvalsuede/zencli/raw/main/docs/demo.mp4" controls width="800"></video>
-
-> If the video doesn't play inline, [watch it here](./docs/demo.mp4).
 
 ## Install
 
@@ -114,6 +112,10 @@ chpwd_osc7
 - `⌘T` new terminal tab (zsh)
 - `⌘W` close current terminal tab
 - `⌘1`…`⌘9` jump to terminal tab N
+- `⌘⇧]` / `⌘⇧[` next / previous terminal tab
+- `⌃⇥` / `⌃⇧⇥` next / previous terminal tab
+- `⌘⌥→` / `⌘⌥←` next / previous terminal tab
+- Right-click a terminal tab to rename (Enter commits, Esc cancels)
 - `⌘⇧T` new sidebar tab
 - `⌘⇧B` toggle sidebar
 - Drag the thin divider to resize the sidebar
@@ -122,8 +124,23 @@ chpwd_osc7
 
 Plain interactive zsh — acts exactly like opening Terminal.app. Type
 `claude` to start Claude Code; exit claude and you're back at your shell
-prompt. The first-tab boot command lives in the `newTab('zsh')` call near
-the bottom of `src/renderer.js`.
+prompt. The boot call lives near the bottom of `src/renderer.js`
+(`bootTerminalTabs`).
+
+## Tabs
+
+- **Label = last folder.** New tabs show the basename of their working
+  directory (`~`, `zencli`, `src`, etc.). As you `cd`, the label tracks
+  live via OSC 7 (macOS zsh emits this by default; for other shells see
+  [cwd tracking](#cwd-tracking)).
+- **Right-click a tab to rename.** The label turns into an inline
+  editor. Enter commits, Esc cancels, click-away commits. Empty text
+  reverts the tab back to auto folder mode.
+- **Switching tabs** — any of:
+  - `⌘1`…`⌘9` — jump to tab N
+  - `⌘⇧]` / `⌘⇧[` — next / previous tab
+  - `⌃⇥` / `⌃⇧⇥` — next / previous tab
+  - `⌘⌥→` / `⌘⌥←` — next / previous tab
 
 ## Activity indicators
 
@@ -168,10 +185,9 @@ for a tool call or thinking block. The spinner is now the single source
 of "still working," and the bell / OSC 1337 are the single source of
 "done."
 
-Tab labels also auto-update from the terminal title (`OSC 0` / `OSC 2`
-escape sequences). Programs like `claude` set this, so the first tab's
-label will flip from "zsh" to whatever claude writes (e.g. the model
-name or a session hint).
+Terminal titles (`OSC 0` / `OSC 2`) are used only to detect Claude mode
+— they no longer change the tab label. If you want a non-folder name
+for a tab, right-click it and rename.
 
 ### Claude Code notifications
 
@@ -227,7 +243,8 @@ if Claude Code notifications are enabled, but this is the precise path:
   `electron/main.js` (currently https://www.youtube.com).
 - **First-tab command** — last line of `src/renderer.js`.
 - **New-tab command** — the `newTabBtn` click handler and the `⌘T`
-  shortcut in `src/renderer.js` both call `newTab('zsh')`.
+  shortcut in `src/renderer.js` both call `newTab()` (defaults to a
+  folder-labeled zsh tab).
 - **Theme** — `src/styles.css` and the xterm `theme` block in
   `src/renderer.js`.
 

@@ -355,8 +355,13 @@ ipcMain.on('state:set-terminals', (_, payload) => {
     s.terminals.tabs = payload.tabs
       .filter((t) => t && typeof t === 'object')
       .map((t) => ({
-        label: typeof t.label === 'string' ? t.label : 'zsh',
+        label: typeof t.label === 'string' ? t.label : '~',
         cwd: typeof t.cwd === 'string' ? t.cwd : undefined,
+        // labelSource tells the renderer whether to keep auto-updating
+        // this tab's label as the cwd changes ('folder') or leave it
+        // alone because the user renamed it ('user'). Anything else
+        // falls back to 'user' on load so we don't clobber renames.
+        labelSource: t.labelSource === 'folder' ? 'folder' : 'user',
       }));
     s.terminals.activeIndex = Number.isInteger(payload.activeIndex)
       ? payload.activeIndex
