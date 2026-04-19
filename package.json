@@ -1,0 +1,48 @@
+{
+  "name": "zencli",
+  "version": "0.1.0",
+  "description": "Electron terminal for Claude Code with a persistent mini-browser sidebar. Multiple terminal tabs + a sidebar that keeps playing YouTube in the background.",
+  "main": "electron/main.js",
+  "license": "MIT",
+  "author": "yuval suede",
+  "homepage": "https://github.com/yuvalsuede/zencli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuvalsuede/zencli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yuvalsuede/zencli/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cli",
+    "terminal",
+    "electron",
+    "xterm",
+    "node-pty",
+    "sidebar",
+    "browser"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin"
+  ],
+  "scripts": {
+    "start": "bash scripts/start-bg.sh",
+    "start:fg": "electron .",
+    "stop": "bash scripts/stop.sh",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "install-hook": "node scripts/install-claude-hook.js",
+    "postinstall": "electron-rebuild -f -w node-pty && node scripts/install-claude-hook.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "@electron/rebuild": "^3.7.0"
+  }
+}

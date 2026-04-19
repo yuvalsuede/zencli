@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>zencli</title>
+  <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="main">
+      <div id="tabbar">
+        <div id="traffic-spacer"></div>
+        <div id="tabs"></div>
+        <button id="new-tab" title="New tab (⌘T)">+</button>
+      </div>
+      <div id="terminals"></div>
+    </div>
+
+    <div id="divider" title="Drag to resize"></div>
+
+    <div id="sidebar">
+      <div id="sidebar-chrome">
+        <div id="sidebar-tabs-row">
+          <div id="sidebar-tabs"></div>
+          <button id="sb-new-tab" title="New sidebar tab (⌘⇧T)">+</button>
+        </div>
+        <div id="sidebar-nav-row">
+          <button id="sb-back" title="Back">‹</button>
+          <button id="sb-fwd" title="Forward">›</button>
+          <button id="sb-reload" title="Reload">↻</button>
+          <input id="sb-url" type="text" spellcheck="false" />
+          <button id="sb-toggle" title="Hide sidebar (⌘⇧B)">⇥</button>
+        </div>
+      </div>
+      <div id="sidebar-webview-slot"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
